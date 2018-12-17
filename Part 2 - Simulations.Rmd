@@ -1,0 +1,896 @@
+---
+title: "Part 2 - Simulations"
+author: "Louis Sirugue"
+date: "December 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+***
+## 1. B-splines
+***
+
+### 1.1 Theory
+
+One can use B-splines as a basis function for nonparametric IV estimation. B-splines are defined by their degree $k$, the higher $k$ the smoother the function, and their numbers of interior knots $m +1 $. The interior knots are usually evenly spaced (the B-splines function is in that case said to be uniform) on the interval $[0,1]$, and the knots-set must be extended by $k$ additional knots at each bound for the function to be defined over the whole interval. Exterior knots below (resp. above) the lower (resp. upper) bound are usually set to be equal to the lower (resp. upper) bound, but these values are arbitrary. Thus the total number of knots $\{\xi_{j} : j =-k,...,m+k \}$ is $m + 1 + 2k$ and is such that:  
+
+$$\xi_{-k} < \xi_{-k+1} < ... < -\xi_{-1} < \xi_{0} = 0 < \xi_{1} <...<\xi_{m} = 1 < \xi_{m+1} < ... <\xi_{m+k}$$
+
+The following function takes as arguments a number of knots $m + 1$ and the degree of the splines, and returns the set of $m + 1 + 2k$ knots with the interior knots evenly spaced on the unit interval $[0,1]$.
+
+```{r knots-set-function, include = TRUE, echo = TRUE}
+knot_vector <- function(mp1, k) {
+  
+  #Generate the interior knots
+  knot_set <- 0
+  nk1 <- mp1 - 1
+  for (i in (1:nk1)) {
+    lastval <- knot_set[length(knot_set)]
+    newval <- lastval + (1 / nk1)
+    knot_set <- c(knot_set, newval)
+  }
+  
+  #Extend the lower bound
+  lbound_ext <- -1/nk1
+  for (i in (1:(k - 1))) {
+    lastval <- lbound_ext[length(lbound_ext)]
+    newval <- lastval - (1 / nk1)
+    lbound_ext <- c(lbound_ext, newval)
+  }
+  lbound_ext <- rev(lbound_ext)
+  
+  #Extend the upper bound
+  ubound_ext <- 1 + (1/nk1)
+  for (i in (1:(k - 1))) {
+    lastval <- ubound_ext[length(ubound_ext)]
+    newval <- lastval + (1 / nk1)
+    ubound_ext <- c(ubound_ext, newval)
+  }
+  
+  knot_set <- c(lbound_ext, knot_set, ubound_ext)
+  return(knot_set)
+}
+```
+
+For instance, the set of knots for uniform B-splines of degree 3 and with 4 interior knots would be:  
+
+```{r knots-set-ex, include = TRUE, echo = TRUE}
+knot_vector(4, 3)
+```
+
+The $p^{th}$ B-spline of the function is defined as: 
+
+$$B_{p}(x) = \sum_{j=p}^{p+k+1} \Big[\prod_{i=p, i\neq j}^{p+k-1} \frac{1}{\xi_{i}-\xi_{j}} \Big] (x - \xi_{j})^{k}_{+}; \hspace{0.2in} 0 \leq x \leq 1; \hspace{0.2in} p =-k, ... , m+ k  $$   
+
+where $(x - \xi_{j})^{k}_{+} = (x - \xi_{j})^{k}$ if $(x - \xi_{j}) > 0$ and $0$ otherwise. Thus, for $x \in (\xi_{p}, \xi_{p+k+1})$, $B_{p}$ is a polynomial function, and $B_{p} = 0$ for $x \notin (\xi_{p}, \xi_{p+k+1})$. But in his application, Horowitz uses $\eta/(\xi_{i}-\xi_{j})$, with $\eta$ set equal to $m / 2$.  
+
+The following function takes as arguments the order of the function $k$ and its set of knots generated with the previously defined function and provides what corresponds to the term inside the brackets in the equation for each $p$. 
+
+```{r REPLACECHUKTITLE, include = TRUE, echo = TRUE}
+spline_mat <- function(k, knot_set, del){
+  nb_knots <- length(knot_set)
+  nb_p <- nb_knots - k - 1
+  smat <- matrix(rep(0, len=(nb_knots*nb_p)), 
+                 nrow = nb_knots) 
+  
+  for (row in (1:nb_knots)){
+    for (col in (1:nb_p)){
+      col_max <- col + k + 1
+      if ((row >= col) & (row <= col_max)){
+        smat[row,col] <- 1 
+      }
+      
+      sign <- 1
+      
+      if (smat[row,col] > 0){
+        for (column in (col:col_max)){
+          if (column != row){
+            sign <- sign * (del / (column - row))
+            #Why is del not equal to 1?
+          }
+        }
+      }
+      
+      smat[row,col] <- smat[row,col] * sign
+      
+    }
+  }
+  return(smat)
+}
+```
+
+Finally, the following function takes as an input the $x$ variable, the index of the spline to be computed, the degree of the function, the set of knots and what is inside the brackets in the formula. As an output, it returns $B_{p}(x)$, that is, the $p^{th}$ B-spline.
+
+```{r pthspline, echo = TRUE, include = TRUE}
+pth_spline <- function(variable, p, k, knot_set, spline_mat){
+  #We compute x minus the knot for each knot
+  xminusxi <- matrix(rep(0, len=(length(knot_set)*length(variable))), 
+                  nrow = length(knot_set))
+  
+  for (i in (1:length(knot_set))) {
+    for (j in (1:length(variable))) {
+      xminusxi[i, j] <- variable[j] - knot_set[i]
+    }
+  }
+  
+  #We raise it to the power k
+  xminusxik <- abs(xminusxi)^k
+
+  term <- matrix(rep(0, len=(length(knot_set)*length(variable))), 
+                 nrow = length(knot_set))
+  
+  #We compute to product of what was define in the previous 
+  #function and (x - xi)^k
+  for (i in (1:dim(term)[1])) {
+    for (j in (1:dim(term)[2])) {
+      if (xminusxi[i, j] > 0) {
+        col <- spline_mat[,p]
+        term[i,j] <- xminusxik[i,j]*col[i]
+      }
+    }
+  }
+  
+  #And finally we apply the sum operator
+  pth_spline <- vector(mode = "numeric", length = 0)
+  for (i in (1:(dim(term)[2]))){
+    newval <- sum(term[,i])
+    pth_spline <- c(pth_spline, newval)
+  }
+  return(pth_spline)
+}
+```
+
+The following function combines all what was set up above in one function that takes as an intput a variable $x$, the number of knots $m + 1$ and the degree $k$ of the function. It returns as an output a matrix of dimension $(N \times (m+k))$ containing each $B_{p}(x_{i}); \hspace{0.1in} i = 1,...,N$.
+
+```{r Bspline, echo = TRUE, include = TRUE}
+B_spline <- function(variable, mp1, k) {
+  
+  knot_set <- knot_vector(mp1, k)
+  smat <- spline_mat(k,knot_set, ((mp1 - 1) / 2))
+  nb_p <- length(knot_set) - k - 1
+  
+  B_spline <- matrix(rep(0, length(variable)*nb_p), 
+                     nrow = length(variable))
+  for (p in (1:nb_p)) {
+    B_spline[,p] <- pth_spline(variable, p, k, knot_set, smat)
+  }
+  
+  return(B_spline)
+}
+```
+
+### 1.2 Application
+
+Horowitz uses B-splines as a basis function to estimate nonparametrically an Engel curve. As explained in the previous section of the report, the idea is to estimate $g$ as:   
+
+$$\hat{G} = (W_{n}'X_{n})^{-1}W_{n}'Y_{n}$$
+
+```{r application1, include = TRUE, echo = FALSE}
+#Import data
+data1 <- read.table(file = file.choose(), header = FALSE, sep = "")
+data <- data1
+y <- data[,1]
+x <- data[,2]
+w <- data[,3]
+
+#Convert variables to unit interval
+delx <- max(x) - min(x)
+minx <- min(x)
+x <- (x - minx)/delx
+w <- (w - min(w))/(max(w) - min(w))
+w <- (w - min(w))/(max(w) - min(w))
+
+xx <- 5 * B_spline(x, 4, 3) #Where does this 5 come from?
+ww <- 5 * B_spline(w, 4, 3) #Where does this 5 come from?
+```
+
+In Horowitz's notations, `xx` and `ww` correspond to the $n \times J_{n}$ matrices whose $(i,j)$ elements are $\psi_{j}(X_{i})$ and $\psi_{j}(W_{i})$, that we'll denote by $X$ and $W$ respectively. In our case, this corresponds to the $(N \times (m+k))$ matrices whose elements are $B_{p}(x_{i})$. 
+
+To overcome the ill-posed inverse problem,  Horowitz uses the following \textit{à la Tikhonov} stabilization method.  
+
+$$\hat{G} = (W_{n}'X_{n})^{-1}W_{n}'Y_{n}\\
+= \frac{\frac{1}{n^2}(X_{n}'W_{n})(W_{n}')}{ \frac{1}{n^2}(X_{n}'W_{n})(W_{n}'X_{n})}Y_{n}\\
+\approx \frac{\frac{1}{n^2}(X_{n}'W_{n})(W_{n}')}{ \frac{1}{n^2}(X_{n}'W_{n})(W_{n}'X_{n}) + a_{n}I}Y_{n},$$  
+
+where $a_{n}$ must be positive constants that tend to $0$ as $n$ tends to infinity. 
+
+```{r estimation, include=TRUE, echo = TRUE, fig.align='center'}
+an <- 10^(-9) #Stabilization Parameter
+
+denominator <- (crossprod(xx, ww)%*%crossprod(ww,xx))/(length(x)^2)
+numerator <- (crossprod(xx,ww)%*%t(ww))/(length(x)^2)
+nb_col_den = dim(denominator)[1]
+denominator <- denominator + (an * diag(nb_col_den)) 
+Ghat <- solve(denominator) %*% numerator %*% y
+
+yhat <- xx %*% Ghat
+xx <- (delx * x) + minx
+
+results <- data.frame(yhat,xx)
+results <- results[order(yhat),]
+
+library(ggplot2)
+ggplot(results, aes(results$xx)) + 
+  geom_line(aes(y = yhat)) + 
+  scale_x_continuous(name="Logarithm of Total Expenditures", limits=c(3.5, 8)) +
+  scale_y_continuous(name="Estimated Expenditure Share", limits=c(0, 0.3)) +
+  ggtitle("Estimated Engel curve for food")
+```
+
+Horowitz mentions that the shape of this curve is supposed to remain similar with 5 or 6 knots. If we indeed increase the number of knots keeping $k = m$, we get the following results:
+
+```{r more knots, echo=FALSE, fig.height = 4, fig.width = 5, fig.align='center'}
+#Import data
+data2 <- data1
+y <- data2[,1]
+x <- data2[,2]
+w <- data2[,3]
+
+#Convert variables to unit interval
+delx <- max(x) - min(x)
+minx <- min(x)
+x <- (x - minx)/delx
+w <- (w - min(w))/(max(w) - min(w))
+w <- (w - min(w))/(max(w) - min(w))
+
+#We ...
+xx <- 5 * B_spline(x, 5, 4)
+ww <- 5 * B_spline(w, 5, 4)
+
+rparm <- 10^(-9) #Stabilization Parameter
+
+denominator <- (crossprod(xx, ww)%*%crossprod(ww,xx))/(length(x)^2)
+numerator <- (crossprod(xx,ww)%*%t(ww))/(length(x)^2)
+nb_col_den = dim(denominator)[1]
+denominator <- denominator + (rparm * diag(nb_col_den)) 
+Ghat <- solve(denominator) %*% numerator %*% y
+
+yhat <- xx %*% Ghat
+xx <- (delx * x) + minx
+
+results <- data.frame(yhat,xx)
+results <- results[order(yhat),]
+
+ggplot(results, aes(results$xx)) + 
+  geom_line(aes(y = yhat)) + 
+  scale_x_continuous(name="Logarithm of Total Expenditures", limits=c(3.5, 8)) +
+  scale_y_continuous(name="Estimated Expenditure Share", limits=c(0, 0.3)) +
+  ggtitle("Estimated Engel curve for food with 5 knots")
+
+#Import data
+data3 <- data1
+y <- data3[,1]
+x <- data3[,2]
+w <- data3[,3]
+
+#Convert variables to unit interval
+delx <- max(x) - min(x)
+minx <- min(x)
+x <- (x - minx)/delx
+w <- (w - min(w))/(max(w) - min(w))
+w <- (w - min(w))/(max(w) - min(w))
+
+#We ...
+xx <- 5 * B_spline(x, 6, 5)
+ww <- 5 * B_spline(w, 6, 5)
+
+rparm <- 10^(-9) #Stabilization Parameter
+
+denominator <- (crossprod(xx, ww)%*%crossprod(ww,xx))/(length(x)^2)
+numerator <- (crossprod(xx,ww)%*%t(ww))/(length(x)^2)
+nb_col_den = dim(denominator)[1]
+denominator <- denominator + (rparm * diag(nb_col_den)) 
+Ghat <- solve(denominator) %*% numerator %*% y
+
+yhat <- xx %*% Ghat
+xx <- (delx * x) + minx
+
+results <- data.frame(yhat,xx)
+results <- results[order(yhat),]
+
+ggplot(results, aes(results$xx)) + 
+  geom_line(aes(y = yhat)) + 
+  scale_x_continuous(name="Logarithm of Total Expenditures", limits=c(3.5, 8)) +
+  scale_y_continuous(name="Estimated Expenditure Share", limits=c(0, 0.3)) +
+  ggtitle("Estimated Engel curve for food with 6 knots")
+```
+
+***
+## 2. Simulations
+***
+
+### 2.1 Data generation
+
+Let us apply this estimator on simulated data and see how it behaves in different settings by considering the case of endogeneity due to measurement errors.
+
+```{r parameters, include = TRUE, echo = TRUE}
+n <- 10000
+endogeneity <- 0.7
+mean_x <- 10
+var_x <- 1
+mean_w <- 15
+var_w <- 1
+relevance <- 0.9
+```
+
+We first generate two random variables $\nu$ and $\epsilon$ of size $n = `r n`$ such that 
+$$ \nu , \epsilon \sim N(0,1),$$ 
+$$corr(\nu,\epsilon) = `r endogeneity`.$$ 
+
+We then generate our instrument variable and the exogenous part of the explanatory variable such that:
+$$W \sim N(`r mean_w`,`r var_w`),$$  
+
+$$X^{*} \sim N(`r mean_x`, `r var_x`) $$  
+
+$$cov(X^{*}, W) = `r relevance`$$.
+
+Our model of interest is:
+
+$$y = g(X^{*}) + \epsilon,$$
+but we would only observe $X = X^{*} + \nu$. 
+
+```{r MASS, include = TRUE, echo = FALSE, warning = FALSE}
+library(MASS)
+```
+
+```{r gen, include = TRUE, echo = TRUE}
+set.seed(1)
+
+nu_epsilon <- mvrnorm(n, c(0, 0), matrix(c(1, endogeneity, endogeneity, 1), 2, 2))
+nu <- nu_epsilon[,1]
+epsilon <- nu_epsilon[,2]
+
+x_w <- mvrnorm(n, c(mean_x, mean_w), matrix(c(var_x, relevance, relevance, var_w), 2, 2))
+x <- x_w[,1]
+w <- x_w[,2]
+
+x_obs <- x + nu
+```
+
+We can check that both the error term and the instrument variable are correlated with the endogenous variable but not with each other, and that the true x is not correlated with the error terms.
+
+```{r check, include = TRUE, echo = FALSE}
+Coefficients <- c(round(summary(lm(x_obs~epsilon))$coefficient[2,1], 3), round(summary(lm(x_obs~w))$coefficient[2,1], 3), round(summary(lm(w~epsilon))$coefficient[2,1], 3), round(summary(lm(x~epsilon))$coefficient[2,1], 3), round(summary(lm(x~nu))$coefficient[2,1], 3))
+P_values <- c(round(summary(lm(x_obs~epsilon))$coefficient[2,4], 3), round(summary(lm(x_obs~w))$coefficient[2,4], 3), round(summary(lm(w~epsilon))$coefficient[2,4], 3), round(summary(lm(x~epsilon))$coefficient[2,4], 3), round(summary(lm(x~nu))$coefficient[2,4], 3))
+table <- data.frame(Coefficients, P_values, row.names = c("Observed X on epsilon", "Observed X on W", "W on epsilon", "True X on epsilon", "True X on nu"))
+
+print(table)
+``` 
+
+### 2.2 Linear vs nonparametric estimation
+
+Usually, one will assume a linear relationship between $X$ and $Y$. If the true relationship is indeed linear, let's say $g(x) = 3x$, we obtain the following results.
+
+```{r tsls, include = TRUE, echo = FALSE}
+y <- (3 * x) + epsilon
+xhat <- fitted.values(lm(x_obs ~ w))
+
+Coefficients <- c(round(summary(lm(y ~ x))$coefficients[2,1], 2), round(summary(lm(y ~ x_obs))$coefficients[2,1], 2), round(summary(lm(y ~ xhat))$coefficients[2,1], 2))
+P_values <- c(round(summary(lm(y ~ x))$coefficients[2,4], 2), round(summary(lm(y ~ x_obs))$coefficients[2,4], 2), round(summary(lm(y ~ xhat))$coefficients[2,4], 2))
+
+table <- data.frame(Coefficients, P_values, row.names = c("OLS with true X", "OLS with observed X", "2SLS"))
+
+print(table)
+``` 
+
+This table shows the attenuation bias of endogeneity due to measurement errors, and that 2SLS yields a good approximation, when all assumptions hold. Graphically:
+
+```{r linear_plot, include = TRUE, echo = FALSE, fig.height = 3, fig.width = 5, fig.align='center'}
+OLS <- (summary(lm(y ~ x_obs))$coefficients[2,1] * x) + summary(lm(y ~ x_obs))$coefficients[1,1]
+TSLS <- (summary(lm(y ~ xhat))$coefficients[2,1] * x) + summary(lm(y ~ xhat))$coefficients[1,1]
+linearplot_data <- data.frame(y, x, OLS, TSLS)
+
+ggplot(linearplot_data, aes(x)) + 
+  geom_point(aes(y = y), alpha = 0.1) +
+  geom_line(aes(y = OLS), color = "red") +
+  geom_line(aes(y = TSLS), color = "blue")
+```
+
+If we repeat the simulation a thousand times, we indeed find a good estimation with 2SLS:
+
+```{r thousand, include = TRUE, echo = FALSE, fig.height = 3, fig.width = 5, fig.align='center'}
+betaOLS <- vector(mode = "numeric", length = 0)
+beta2SLS <- vector(mode = "numeric", length = 0)
+for (i in 0:1000){
+  mc_nu_epsilon <- mvrnorm(n, c(0, 0), matrix(c(1, endogeneity, endogeneity,
+                                             1), 2, 2))
+  mc_nu <- mc_nu_epsilon[,1]
+  mc_epsilon <- mc_nu_epsilon[,2]
+  mc_x_w <- mvrnorm(n, c(mean_x, mean_w), matrix(c(var_x, relevance,
+                                                relevance, var_w), 2, 2))
+  mc_x <- mc_x_w[,1]
+  mc_w <- mc_x_w[,2]
+  mc_x_obs <- mc_x + mc_nu
+  mc_y <- (3 * mc_x) + mc_epsilon
+  mc_xhat <- fitted.values(lm(mc_x_obs ~ mc_w))
+
+  betaOLS_i <- summary(lm(mc_y ~ mc_x_obs))$coefficients[2,1]
+  beta2SLS_i <- summary(lm(mc_y ~ mc_xhat))$coefficients[2,1]
+  
+  betaOLS <- c(betaOLS, betaOLS_i)
+  beta2SLS <- c(beta2SLS, beta2SLS_i)
+}
+
+beta_data <- data.frame(betaOLS, beta2SLS)
+
+ggplot(beta_data, aes(x=beta2SLS)) + 
+  geom_histogram(binwidth=0.005)
+```
+
+However, if the relationship between x and y is not linear, the 2SLS estimation may not be relevant anymore. Indeed, if instead of considering $g(x) = 3x$, the true relationship is $g(x) = (x-10)^{3} + 250$, using 2SLS would bequite misleading, as depicted with the following graph.
+
+```{r setupbs, include=TRUE, echo = FALSE}
+n <- 10000
+endogeneity <- 0.7
+mean_x <- 10
+var_x <- 1
+mean_w <- 15
+var_w <- 1
+relevance <- 0.9
+```
+
+```{r nonlinearity, include=TRUE, echo = TRUE, fig.height = 3, fig.width = 5, fig.align='center'}
+set.seed(1)
+nu_epsilon <- mvrnorm(n, c(0, 0), matrix(c(1, endogeneity, endogeneity,
+                                             1), 2, 2))
+  nu <- nu_epsilon[,1]
+  epsilon <- nu_epsilon[,2]
+  x_w <- mvrnorm(n, c(mean_x, mean_w), matrix(c(var_x, relevance,
+                                                relevance, var_w), 2, 2))
+  x <- x_w[,1]
+  w <- x_w[,2]
+  x_obs <- x + nu
+  xhat <- fitted.values(lm(x_obs ~ w))
+  
+y <- (((x-10)^3) + 250) + epsilon
+iv <- (summary(lm(y ~ xhat))$coefficients[2,1] * x) + summary(lm(y ~ xhat))$coefficients[1,1]
+
+nonlinear_data <- data.frame(x, y, iv)
+
+ggplot(nonlinear_data, aes(x)) +
+  geom_point(aes(y=y), alpha = 0.1) +
+  geom_line(aes(y = iv), color = "red")
+```
+
+If we use a quadratic B-spline with 3 interior knots as a basis function to compute the estimator suggested by Horowitz, we obtain the following curve.
+
+```{r myestimation, include = TRUE, echo = TRUE, warning = FALSE}
+library(pracma)
+
+var0 <- seq(1, 10000, 1)
+spline_data <- data.frame(var0)
+
+for (i in 1:15) {
+
+nu_epsilon <- mvrnorm(n, c(0, 0), matrix(c(1, endogeneity, endogeneity,
+                                             1), 2, 2))
+  nu <- nu_epsilon[,1]
+  epsilon <- nu_epsilon[,2]
+  x_w <- mvrnorm(n, c(mean_x, mean_w), matrix(c(var_x, relevance,
+                                                relevance, var_w), 2, 2))
+  x <- x_w[,1]
+  w <- x_w[,2]
+  x_obs <- x + nu
+  xhat <- fitted.values(lm(x_obs ~ w))
+  
+y <- (((x-10)^3) + 250) + epsilon
+
+delx <- max(x_obs) - min(x_obs)
+minx <- min(x_obs)
+norm_x <- (x_obs - minx)/delx
+norm_w <- (w - min(w))/(max(w) - min(w))
+
+xx <- 5 * B_spline(norm_x, 3, 2)
+ww <- 5 * B_spline(norm_w, 3, 2)
+
+an <- 10^(-9) 
+
+denominator <- (crossprod(xx, ww)%*%crossprod(ww,xx))/(length(x)^2)
+numerator <- (crossprod(xx,ww)%*%t(ww))/(length(x)^2)
+nb_col_den = dim(denominator)[1]
+denominator <- denominator + (an * diag(nb_col_den)) 
+Ghat <- solve(denominator) %*% numerator %*% y
+yhat2 <- xx %*% Ghat
+
+spline_data <- data.frame(spline_data, yhat2, x_obs)
+}
+
+x_obs <- seq(2.0016,18,0.0016)
+yhat2 <- (((x_obs-10)^3) + 250)
+spline_data <- data.frame(spline_data, yhat2, x_obs)
+
+x_sequence <- seq(3, dim(spline_data)[2], 2)
+all_xs <- vector(mode = "numeric", length = 0)
+for (i in x_sequence){
+  all_xs <- c(all_xs, spline_data[,i])
+}
+all_unique_x <- unique(all_xs)
+
+graph_data <- data.frame(all_unique_x)
+
+y_sequence <- seq(2, (dim(spline_data)[2] - 1), 2)
+
+for (j in y_sequence){
+  oldy <- spline_data[,j]
+  corresponding_x <- spline_data[,j+1]
+  newy <- rep(NA, length(all_unique_x))
+  indices <- match(corresponding_x, all_unique_x)
+  newy[indices] <- oldy
+  graph_data <- data.frame(graph_data, newy)
+}
+
+z1 <- with(graph_data, interp1(all_unique_x, newy, all_unique_x, "linear"))
+z2 <- with(graph_data, interp1(all_unique_x, newy.1, all_unique_x, "linear"))
+z3 <- with(graph_data, interp1(all_unique_x, newy.2, all_unique_x, "linear"))
+z4 <- with(graph_data, interp1(all_unique_x, newy.3, all_unique_x, "linear"))
+z5 <- with(graph_data, interp1(all_unique_x, newy.4, all_unique_x, "linear"))
+z6 <- with(graph_data, interp1(all_unique_x, newy.5, all_unique_x, "linear"))
+z7 <- with(graph_data, interp1(all_unique_x, newy.6, all_unique_x, "linear"))
+z8 <- with(graph_data, interp1(all_unique_x, newy.7, all_unique_x, "linear"))
+z9 <- with(graph_data, interp1(all_unique_x, newy.8, all_unique_x, "linear"))
+z10 <- with(graph_data, interp1(all_unique_x, newy.9, all_unique_x, "linear"))
+z11 <- with(graph_data, interp1(all_unique_x, newy.10, all_unique_x, "linear"))
+z12 <- with(graph_data, interp1(all_unique_x, newy.11, all_unique_x, "linear"))
+z13 <- with(graph_data, interp1(all_unique_x, newy.12, all_unique_x, "linear"))
+z14 <- with(graph_data, interp1(all_unique_x, newy.13, all_unique_x, "linear"))
+z15 <- with(graph_data, interp1(all_unique_x, newy.14, all_unique_x, "linear"))
+ztrue <- with(graph_data, interp1(all_unique_x, newy.10, all_unique_x, "linear"))
+new_data <- data.frame(all_unique_x, z1, z2, z3, z4, z5, z6, z7, z8, z9, z10, z11, z12, z13, z14, z15, ztrue)
+
+ggplot(new_data, aes(x = all_unique_x)) +
+  geom_line(aes(y = z1), alpha = 0.2) +
+  geom_line(aes(y = z2), alpha = 0.2) +
+  geom_line(aes(y = z3), alpha = 0.2) +
+  geom_line(aes(y = z4), alpha = 0.2) +
+  geom_line(aes(y = z5), alpha = 0.2) +
+  geom_line(aes(y = z6), alpha = 0.2) +
+  geom_line(aes(y = z7), alpha = 0.2) +
+  geom_line(aes(y = z8), alpha = 0.2) +
+  geom_line(aes(y = z9), alpha = 0.2) +
+  geom_line(aes(y = z10), alpha = 0.2) +
+  geom_line(aes(y = z11), alpha = 0.2) +
+  geom_line(aes(y = z12), alpha = 0.2) +
+  geom_line(aes(y = z13), alpha = 0.2) +
+  geom_line(aes(y = z14), alpha = 0.2) +
+  geom_line(aes(y = z15), alpha = 0.2) +
+  geom_line(aes(y = ztrue), color = "red") + 
+  ggtitle("Nonparametric Estimation")
+```
+
+Even if the estimation is not as steep as in the true function at the tails of the distribution, is it still very accurate. However, the thing is that if I did not know that I had to use a quadratic B-spline, I could have ended up with something quite misleading as well. Here are estimations of frome order 2 to 6. Notice that with one knot, we end up almost exactly with the linear IV estimator.
+
+```{r higher_degree, include= TRUE, echo = TRUE, fig.height = 3, fig.width = 5, fig.align='center'}
+nu_epsilon <- mvrnorm(n, c(0, 0), matrix(c(1, endogeneity, endogeneity,
+                                             1), 2, 2))
+  nu <- nu_epsilon[,1]
+  epsilon <- nu_epsilon[,2]
+  x_w <- mvrnorm(n, c(mean_x, mean_w), matrix(c(var_x, relevance,
+                                                relevance, var_w), 2, 2))
+  x <- x_w[,1]
+  w <- x_w[,2]
+  x_obs <- x + nu
+  xhat <- fitted.values(lm(x_obs ~ w))
+  
+y <- (((x-10)^3) + 250) + epsilon
+
+delx <- max(x_obs) - min(x_obs)
+minx <- min(x_obs)
+norm_x <- (x_obs - minx)/delx
+norm_w <- (w - min(w))/(max(w) - min(w))
+
+#Degree 1
+xx <- 4 * B_spline(norm_x, 2, 1)
+ww <- 4 * B_spline(norm_w, 2, 1)
+denominator <- (crossprod(xx, ww)%*%crossprod(ww,xx))/(length(x)^2)
+numerator <- (crossprod(xx,ww)%*%t(ww))/(length(x)^2)
+nb_col_den = dim(denominator)[1]
+denominator <- denominator + (an * diag(nb_col_den)) 
+Ghat <- solve(denominator) %*% numerator %*% y
+yhat1 <- xx %*% Ghat
+
+#Degree 2
+xx <- 5 * B_spline(norm_x, 3, 2)
+ww <- 5 * B_spline(norm_w, 3, 2)
+denominator <- (crossprod(xx, ww)%*%crossprod(ww,xx))/(length(x)^2)
+numerator <- (crossprod(xx,ww)%*%t(ww))/(length(x)^2)
+nb_col_den = dim(denominator)[1]
+denominator <- denominator + (an * diag(nb_col_den)) 
+Ghat <- solve(denominator) %*% numerator %*% y
+yhat2 <- xx %*% Ghat
+
+#Degree 3
+xx <- 6 * B_spline(norm_x, 4, 3)
+ww <- 6 * B_spline(norm_w, 4, 3)
+denominator <- (crossprod(xx, ww)%*%crossprod(ww,xx))/(length(x)^2)
+numerator <- (crossprod(xx,ww)%*%t(ww))/(length(x)^2)
+nb_col_den = dim(denominator)[1]
+denominator <- denominator + (an * diag(nb_col_den)) 
+Ghat <- solve(denominator) %*% numerator %*% y
+yhat3 <- xx %*% Ghat
+
+#Degree 4
+xx <- 7 * B_spline(norm_x, 5, 4)
+ww <- 7 * B_spline(norm_w, 5, 4)
+denominator <- (crossprod(xx, ww)%*%crossprod(ww,xx))/(length(x)^2)
+numerator <- (crossprod(xx,ww)%*%t(ww))/(length(x)^2)
+nb_col_den = dim(denominator)[1]
+denominator <- denominator + (an * diag(nb_col_den)) 
+Ghat <- solve(denominator) %*% numerator %*% y
+yhat4 <- xx %*% Ghat
+
+#Degree 5
+xx <- 8 * B_spline(norm_x, 6, 5)
+ww <- 8 * B_spline(norm_w, 6, 5)
+denominator <- (crossprod(xx, ww)%*%crossprod(ww,xx))/(length(x)^2)
+numerator <- (crossprod(xx,ww)%*%t(ww))/(length(x)^2)
+nb_col_den = dim(denominator)[1]
+denominator <- denominator + (an * diag(nb_col_den)) 
+Ghat <- solve(denominator) %*% numerator %*% y
+yhat5 <- xx %*% Ghat
+
+truey <- (((x_obs-10)^3) + 250)
+
+splines_data <- data.frame(x_obs, yhat1, yhat2, yhat3, yhat4, yhat5, truey)
+
+ggplot(splines_data, aes(splines_data$x_obs)) + 
+  geom_line(aes(y = yhat1), color = "red") +
+  geom_line(aes(y = yhat2), color = "blue") +
+  geom_line(aes(y = yhat3), color = "green") +
+  geom_line(aes(y = yhat4), color = "purple") +
+  geom_line(aes(y = yhat5), color = "pink") +
+  geom_line(aes(y = truey), color = "black")
+```
+
+Then, try with a steeper function ($y = 4(x-10)^{3} + 250$).  
+Then, try with more noise (reduce the variance of `x`).
+
+```{r mvrunif, include = FALSE, echo = FALSE}
+#Extra code: with a uniform distribution
+
+unif.to.norm <- function(rho) {
+  4118/3163 * sin(rho/3) + 3183/3149 * sin(2 * rho/3) - 145/2391 * sin(rho)
+}
+
+for (coeff in (1:10)) {
+
+var0 <- seq(1, 10000, 1)
+spline_data <- data.frame(var0)
+
+for (i in 1:10) {
+  
+n <- 10000    
+d <- 2
+relevance <- 0.9
+endogeneity <- 0.7
+
+rho.norm <- unif.to.norm(relevance)
+Sigma <- matrix(rho.norm, d, d) + diag(rep(1-rho.norm, d))
+
+x_w <- pnorm(mvrnorm(n, rep(0, d), Sigma))
+x <- (x_w[,1]*7)+6.5
+w <- (x_w[,2]*7)+11.5
+
+#mean(x)
+#mean(w)
+#summary(lm(x ~w))$coefficients[2,1]
+#min(x)
+#max(x)
+#min(w)
+#max(w)
+
+nu_epsilon <- mvrnorm(n, c(0, 0), matrix(c(1, endogeneity, endogeneity,
+                                             1), 2, 2))
+nu <- nu_epsilon[,1]
+epsilon <- nu_epsilon[,2]
+x_obs <- x + nu
+y <- ((4*((x-10)^3)) + 250) + epsilon
+
+delx <- max(x_obs) - min(x_obs)
+minx <- min(x_obs)
+norm_x <- (x_obs - minx)/delx
+norm_w <- (w - min(w))/(max(w) - min(w))
+
+xx <- coeff * B_spline(norm_x, 3, 2)
+ww <- coeff * B_spline(norm_w, 3, 2)
+
+an <- 10^(-9) 
+
+denominator <- (crossprod(xx, ww)%*%crossprod(ww,xx))/(length(x)^2)
+numerator <- (crossprod(xx,ww)%*%t(ww))/(length(x)^2)
+nb_col_den = dim(denominator)[1]
+denominator <- denominator + (an * diag(nb_col_den)) 
+Ghat <- solve(denominator) %*% numerator %*% y
+yhatunif <- xx %*% Ghat
+
+spline_data <- data.frame(spline_data, yhatunif, x_obs)
+}
+
+x_obs <- seq(6.0008,14,0.0008)
+yhat2 <- ((4*((x_obs-10)^3)) + 250)
+spline_data <- data.frame(spline_data, yhat2, x_obs)
+
+x_sequence <- seq(3, dim(spline_data)[2], 2)
+all_xs <- vector(mode = "numeric", length = 0)
+for (i in x_sequence){
+  all_xs <- c(all_xs, spline_data[,i])
+}
+all_unique_x <- unique(all_xs)
+
+graph_data <- data.frame(all_unique_x)
+
+y_sequence <- seq(2, (dim(spline_data)[2] - 1), 2)
+
+for (j in y_sequence){
+  oldy <- spline_data[,j]
+  corresponding_x <- spline_data[,j+1]
+  newy <- rep(NA, length(all_unique_x))
+  indices <- match(corresponding_x, all_unique_x)
+  newy[indices] <- oldy
+  graph_data <- data.frame(graph_data, newy)
+}
+
+z1 <- with(graph_data, interp1(all_unique_x, newy, all_unique_x, "linear"))
+z2 <- with(graph_data, interp1(all_unique_x, newy.1, all_unique_x, "linear"))
+z3 <- with(graph_data, interp1(all_unique_x, newy.2, all_unique_x, "linear"))
+z4 <- with(graph_data, interp1(all_unique_x, newy.3, all_unique_x, "linear"))
+z5 <- with(graph_data, interp1(all_unique_x, newy.4, all_unique_x, "linear"))
+z6 <- with(graph_data, interp1(all_unique_x, newy.5, all_unique_x, "linear"))
+z7 <- with(graph_data, interp1(all_unique_x, newy.6, all_unique_x, "linear"))
+z8 <- with(graph_data, interp1(all_unique_x, newy.7, all_unique_x, "linear"))
+z9 <- with(graph_data, interp1(all_unique_x, newy.8, all_unique_x, "linear"))
+z10 <- with(graph_data, interp1(all_unique_x, newy.9, all_unique_x, "linear"))
+ztrue <- with(graph_data, interp1(all_unique_x, newy.10, all_unique_x, "linear"))
+new_data <- data.frame(all_unique_x, z1, z2, z2, z3, z4, z5, z6, z7, z8, z9, z10, ztrue)
+
+plot <- paste("plot", coeff, sep = "")
+
+myggplot <- ggplot(new_data, aes(x = all_unique_x)) +
+  geom_line(aes(y = z1), alpha = 0.2) +
+  geom_line(aes(y = z2), alpha = 0.2) +
+  geom_line(aes(y = z3), alpha = 0.2) +
+  geom_line(aes(y = z4), alpha = 0.2) +
+  geom_line(aes(y = z5), alpha = 0.2) +
+  geom_line(aes(y = z6), alpha = 0.2) +
+  geom_line(aes(y = z7), alpha = 0.2) +
+  geom_line(aes(y = z8), alpha = 0.2) +
+  geom_line(aes(y = z9), alpha = 0.2) +
+  geom_line(aes(y = z10), alpha = 0.2) +
+  geom_line(aes(y = ztrue), color = "red") + 
+  scale_x_continuous(name = "") + 
+  scale_y_continuous(name = "") +
+  ggtitle(paste("Coefficient =", coeff, sep = " "))
+
+assign(plot, myggplot)
+}
+```
+
+### 2.3 Behavior under relaxed assumptions
+
+We know that the 2SLS estimator relies both on the exogeneity and relevance assumptions. Indeed, as we can see on the following formula, a small amount of endogeneity in the instrument can make the bias grow fast if the instrument is weak.
+
+$$plim(\hat{\beta}_{2SLS})=\beta + \frac{cov(W,\epsilon)}{cov(W, X)}$$
+
+The following Figure illustrates this property, with the same setting as before, but with $cov(W,\epsilon)=0.2$ and a covariance between the instrument and the endogenous that decreases from $0.9$ to $0.1$ (estimated linear relationship are darker as the relevance of the instrument decreases).
+
+```{r weaksetup1, include = TRUE, echo = FALSE, fig.height = 3, fig.width = 5, fig.align='center'}
+meancoeffs <- vector(mode = "numeric", length = 0)
+meancsts <- vector(mode = "numeric", length = 0)
+  
+for (i in (seq(0.1, 0.9, 0.1))){
+
+  TSLScoeffs <- vector(mode = "numeric", length = 0)
+  TSLScsts <- vector(mode = "numeric", length = 0)
+  
+  for (j in (0:1001)){
+    n <- 10000
+    endogeneity <- 0.7
+    mean_x <- 10
+    var_x <- 1
+    mean_w <- 15
+    var_w <- 1
+    relevance <- i
+    bias <- 0.2
+    
+    nu_epsilon_x_w <- mvrnorm(n, c(0, 0, mean_x, mean_w), matrix(c(1, endogeneity, 0, 0, endogeneity, 1, 0, bias, 0, 0, 1,  
+                                                                   relevance, 0, bias, relevance, 1), 4, 4))
+    nu <- nu_epsilon_x_w[,1]
+    epsilon <- nu_epsilon_x_w[,2]
+    x <- nu_epsilon_x_w[,3]
+    w <- nu_epsilon_x_w[,4]
+    x_obs <- x + nu
+    
+    y <- (3 * x) + epsilon
+    xhat <- fitted.values(lm(x_obs ~ w))
+    
+    TSLScoeffs <- c(TSLScoeffs, summary(lm(y ~ xhat))$coefficients[2,1]) 
+    TSLScsts <- c(TSLScsts, summary(lm(y ~ xhat))$coefficients[1,1])
+  }
+  
+  meancoeff <- mean(TSLScoeffs)
+  meancoeffs <- c(meancoeffs, meancoeff)
+  
+  meancst <- mean(TSLScsts)
+  meancsts <- c(meancsts, meancst)
+}
+
+x <- seq(5, 15, 0.1)
+true <- 3 * x
+
+data_weak <- data.frame(x, true)
+for (i in (1:length(meancoeffs))){
+    TSLS <- (meancoeffs[i] * x) + meancsts[i]
+    data_weak <- data.frame(data_weak, TSLS)
+}
+
+ggplot(data_weak, aes(x)) + 
+  geom_line(aes(y = true), color = "red") +
+  geom_line(aes(y = TSLS), color = "grey10") +
+  geom_line(aes(y = TSLS.1), color = "grey20") +
+  geom_line(aes(y = TSLS.2), color = "grey30") +
+  geom_line(aes(y = TSLS.3), color = "grey40") +
+  geom_line(aes(y = TSLS.4), color = "grey50") +
+  geom_line(aes(y = TSLS.5), color = "grey60") +
+  geom_line(aes(y = TSLS.6), color = "grey70") +
+  geom_line(aes(y = TSLS.7), color = "grey80") +
+  geom_line(aes(y = TSLS.8), color = "grey90")
+```
+
+But how would a nonparametric estimation behave in that case? The thing is that we can almost always adjust the scalar to get an accurate estimation of the relationship (but it is because I know it), and the lower the $cov(X,W)$ the more senstive the estimation to a change of the scalar. Knowing exactly what the scalar corresponds to is thus necessary to be able to do that part properly
+
+```{r weakbsplines, echo = TRUE, include = FALSE, fig.height = 3, fig.width = 5, fig.align='center'}
+n <- 10000
+endogeneity <- 0.7
+mean_x <- 10
+var_x <- 1
+mean_w <- 15
+var_w <- 1
+relevance <- 0.1
+bias <- 0.2
+#.4 -> 17
+#.5 -> 14
+#.6 -> 12
+#.7 -> 9
+#.8 -> 7
+#.3 -> 20.5
+#.2 -> 21
+#.1 -> HYPERSENSIBLE
+
+nu_epsilon_x_w <- mvrnorm(n, c(0, 0, mean_x, mean_w), matrix(c(1, endogeneity, 0, 0, endogeneity, 1, 0, bias, 0, 0, 1, relevance, 0, bias, relevance, 1), 4, 4))
+nu <- nu_epsilon_x_w[,1]
+epsilon <- nu_epsilon_x_w[,2]
+x <- nu_epsilon_x_w[,3]
+w <- nu_epsilon_x_w[,4]
+x_obs <- x + nu
+
+y <- ((4*((x-10)^3)) + 250) + epsilon
+
+delx <- max(x_obs) - min(x_obs)
+minx <- min(x_obs)
+norm_x <- (x_obs - minx)/delx
+norm_w <- (w - min(w))/(max(w) - min(w))
+
+xx <- 5 * B_spline(norm_x, 3, 2) #Where does this 5 come from?
+ww <- 5 * B_spline(norm_w, 3, 2)
+
+rparm <- 10^(-9) #Stabilization Parameter
+
+denominator <- (crossprod(xx, ww)%*%crossprod(ww,xx))/(length(x)^2)
+numerator <- (crossprod(xx,ww)%*%t(ww))/(length(x)^2)
+nb_col_den = dim(denominator)[1]
+denominator <- denominator + (rparm * diag(nb_col_den)) 
+Ghat <- solve(denominator) %*% numerator %*% y
+yhat2 <- xx %*% Ghat
+
+results <- data.frame(yhat2, x_obs, y)
+
+weak_data <- data.frame(y, x)
+ggplot(weak_data, aes(x)) +
+  geom_point(aes(y=y))
+#insert 2SLS on this plot.
+
+ggplot(results, aes(results$x_obs)) + 
+  geom_line(aes(y = yhat2), color = "blue")
+```
